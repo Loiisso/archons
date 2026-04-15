@@ -1,0 +1,45 @@
+name: baseline
+world:
+  width: 20
+  height: 20
+  toroidal: true
+  initial_alive_probability: 0.34
+game:
+  rounds_per_encounter: 3
+  payoff:
+    reward: 3
+    sucker: 0
+    temptation: 5
+    punishment: 1
+simulation:
+  generations: 20
+  seed: 7
+agents:
+  backend: deterministic
+  strategy_weights:
+    always_cooperate: 0.30
+    always_defect: 0.25
+    tit_for_tat: 0.25
+    grim_trigger: 0.20
+  fallback_strategy: tit_for_tat
+  prompt_evolution:
+    mutation_rate: 0.25
+    mutation_step: 0.12
+    style_options:
+      - balanced
+      - cautious
+      - opportunistic
+      - vengeful
+  ollama:
+    base_url: http://localhost:11434
+    model: qwen2.5:3b-instruct
+    temperature: 0.1
+    timeout_seconds: 30
+
+visualization:
+  enabled: true
+  interval: 5
+  output_dir_name: viz
+  render_ascii: true
+output:
+  root_dir: artifacts
