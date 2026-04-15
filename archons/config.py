@@ -31,6 +31,8 @@ class OllamaConfig(BaseModel):
     model: str = "qwen2.5:3b-instruct"
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0)
+    require_model: bool = True
+    fallback_on_error: bool = False
 
 
 class PromptEvolutionConfig(BaseModel):
@@ -79,6 +81,9 @@ class OutputConfig(BaseModel):
 class SimulationConfig(BaseModel):
     generations: int = Field(default=20, ge=1)
     seed: int = 7
+    print_progress: bool = True
+    progress_interval: int = Field(default=1, ge=1)
+    progress_log_name: str = "progress.log"
 
 
 class ExperimentConfig(BaseModel):
