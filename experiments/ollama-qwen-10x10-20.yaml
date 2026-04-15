@@ -1,0 +1,46 @@
+name: ollama-qwen-10x10-20
+world:
+  width: 10
+  height: 10
+  toroidal: true
+  initial_alive_probability: 0.30
+game:
+  rounds_per_encounter: 1
+  payoff:
+    reward: 3
+    sucker: 0
+    temptation: 5
+    punishment: 1
+simulation:
+  generations: 20
+  seed: 17
+agents:
+  backend: ollama
+  strategy_weights:
+    always_cooperate: 0.25
+    always_defect: 0.25
+    tit_for_tat: 0.30
+    grim_trigger: 0.20
+  fallback_strategy: tit_for_tat
+  prompt_evolution:
+    mutation_rate: 0.20
+    mutation_step: 0.10
+    style_options:
+      - balanced
+      - cautious
+      - opportunistic
+      - vengeful
+  ollama:
+    base_url: http://localhost:11434
+    model: qwen2.5:3b-instruct
+    temperature: 0.1
+    timeout_seconds: 30
+    require_model: true
+    fallback_on_error: false
+visualization:
+  enabled: true
+  interval: 1
+  output_dir_name: viz
+  render_ascii: true
+output:
+  root_dir: artifacts

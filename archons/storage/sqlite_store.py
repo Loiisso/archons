@@ -4,7 +4,7 @@ import csv
 import sqlite3
 from pathlib import Path
 
-from archons.core.models import AgentState, EncounterRecord, GenerationMetrics, Position
+from archons.core.models import AgentState, EncounterRecord, GenerationMetrics, GenerationProfile, Position
 
 
 class RunStore:
@@ -105,6 +105,42 @@ class RunStore:
                 right_payoff INTEGER NOT NULL,
                 PRIMARY KEY (encounter_id, round_index)
             );
+
+            CREATE TABLE IF NOT EXISTS decision_traces (
+                encounter_id TEXT NOT NULL,
+                round_index INTEGER NOT NULL,
+                side TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                opponent_id TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                action TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                reasoning_summary TEXT NOT NULL,
+                used_fallback INTEGER NOT NULL,
+                error_message TEXT,
+                latency_ms REAL NOT NULL,
+                prompt_text TEXT NOT NULL,
+                response_text TEXT NOT NULL,
+                PRIMARY KEY (encounter_id, round_index, side)
+            );
+
+            CREATE TABLE IF NOT EXISTS generation_profiles (
+                run_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                total_seconds REAL NOT NULL,
+                resolve_encounters_seconds REAL NOT NULL,
+                advance_world_seconds REAL NOT NULL,
+                persist_seconds REAL NOT NULL,
+                visualize_seconds REAL NOT NULL,
+                overhead_seconds REAL NOT NULL,
+                decision_trace_count INTEGER NOT NULL,
+                ollama_decisions INTEGER NOT NULL,
+                fallback_decisions INTEGER NOT NULL,
+                ollama_latency_seconds REAL NOT NULL,
+                mean_decision_latency_ms REAL NOT NULL,
+                max_decision_latency_ms REAL NOT NULL,
+                PRIMARY KEY (run_id, generation)
+            );
             """
         )
         self.connection.commit()
@@ -113,6 +149,35 @@ class RunStore:
         self.connection.execute(
             "INSERT INTO runs (run_id, experiment_name, config_yaml, started_at) VALUES (?, ?, ?, ?)",
             (run_id, experiment_name, config_yaml, started_at),
+        )
+        self.connection.commit()
+
+    def record_generation_profile(self, run_id: str, profile: GenerationProfile) -> None:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO generation_profiles (
+                run_id, generation, total_seconds, resolve_encounters_seconds,
+                advance_world_seconds, persist_seconds, visualize_seconds, overhead_seconds,
+                decision_trace_count, ollama_decisions, fallback_decisions,
+                ollama_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                profile.generation,
+                profile.total_seconds,
+                profile.resolve_encounters_seconds,
+                profile.advance_world_seconds,
+                profile.persist_seconds,
+                profile.visualize_seconds,
+                profile.overhead_seconds,
+                profile.decision_trace_count,
+                profile.ollama_decisions,
+                profile.fallback_decisions,
+                profile.ollama_latency_seconds,
+                profile.mean_decision_latency_ms,
+                profile.max_decision_latency_ms,
+            ),
         )
         self.connection.commit()
 
@@ -257,6 +322,32 @@ class RunStore:
                         round_record.right_payoff,
                     ),
                 )
+            for decision_trace in encounter.decision_traces:
+                self.connection.execute(
+                    """
+                    INSERT OR REPLACE INTO decision_traces (
+                        encounter_id, round_index, side, agent_id, opponent_id,
+                        backend, action, confidence, reasoning_summary, used_fallback,
+                        error_message, latency_ms, prompt_text, response_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        encounter_id,
+                        decision_trace.round_index,
+                        decision_trace.side,
+                        decision_trace.agent_id,
+                        decision_trace.opponent_id,
+                        decision_trace.backend,
+                        decision_trace.action,
+                        decision_trace.confidence,
+                        decision_trace.reasoning_summary,
+                        int(decision_trace.used_fallback),
+                        decision_trace.error_message,
+                        decision_trace.latency_ms,
+                        decision_trace.prompt_text,
+                        decision_trace.response_text,
+                    ),
+                )
 
         self.connection.commit()
 
@@ -291,6 +382,46 @@ def export_metrics_csv(db_path: Path, output_path: Path | None = None) -> Path:
                 "average_score",
                 "total_encounters",
                 "total_rounds",
+            ]
+        )
+        writer.writerows(rows)
+    return resolved_output
+
+
+def export_profiles_csv(db_path: Path, output_path: Path | None = None) -> Path:
+    resolved_output = output_path or db_path.with_name("profiles.csv")
+    connection = sqlite3.connect(db_path)
+    rows = connection.execute(
+        """
+        SELECT generation, total_seconds, resolve_encounters_seconds,
+               advance_world_seconds, persist_seconds, visualize_seconds,
+               overhead_seconds, decision_trace_count, ollama_decisions,
+               fallback_decisions, ollama_latency_seconds,
+               mean_decision_latency_ms, max_decision_latency_ms
+        FROM generation_profiles
+        ORDER BY generation ASC
+        """
+    ).fetchall()
+    connection.close()
+
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    with resolved_output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "generation",
+                "total_seconds",
+                "resolve_encounters_seconds",
+                "advance_world_seconds",
+                "persist_seconds",
+                "visualize_seconds",
+                "overhead_seconds",
+                "decision_trace_count",
+                "ollama_decisions",
+                "fallback_decisions",
+                "ollama_latency_seconds",
+                "mean_decision_latency_ms",
+                "max_decision_latency_ms",
             ]
         )
         writer.writerows(rows)

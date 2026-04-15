@@ -23,14 +23,35 @@ uv sync
 uv run archons run --config experiments/baseline.yaml
 ```
 
+## Run The Ollama Agent
+
+Start Ollama locally and ensure the small Qwen model is present:
+
+```bash
+ollama serve
+ollama pull qwen2.5:3b-instruct
+uv run archons ollama-check --config experiments/ollama-qwen.yaml
+uv run archons run --config experiments/ollama-qwen.yaml
+```
+
 Artifacts are written under `artifacts/` by default:
 
 - `simulation.sqlite3` with run data
 - `viz/` with PNG and ASCII snapshots every configured interval
 - `effective_config.yaml` with the config used for the run
+- `progress.log` with run start, per-generation progress, and completion lines for long simulations
+- `profiles.csv` with per-generation timing breakdowns for encounter resolution, world advance, persistence, visualization, and model latency
+- `decision_traces` table in SQLite showing whether each action came from Ollama or a fallback path
+
+Progress reporting is configurable in the experiment YAML under `simulation`:
+
+- `print_progress`: enable or disable live console and file progress
+- `progress_interval`: emit every `n` generations
+- `progress_log_name`: filename written inside the run artifact directory
 
 ## Export Metrics
 
 ```bash
 uv run archons export-metrics --db artifacts/<run-id>/simulation.sqlite3
+uv run archons export-profiles --db artifacts/<run-id>/simulation.sqlite3
 ```
