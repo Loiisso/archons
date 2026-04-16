@@ -112,8 +112,11 @@ class RunStore:
                 side TEXT NOT NULL,
                 agent_id TEXT NOT NULL,
                 opponent_id TEXT NOT NULL,
+                strategy_seed TEXT NOT NULL,
                 backend TEXT NOT NULL,
                 action TEXT NOT NULL,
+                expected_action TEXT NOT NULL,
+                instruction_followed INTEGER NOT NULL,
                 confidence REAL NOT NULL,
                 reasoning_summary TEXT NOT NULL,
                 used_fallback INTEGER NOT NULL,
@@ -134,6 +137,8 @@ class RunStore:
                 visualize_seconds REAL NOT NULL,
                 overhead_seconds REAL NOT NULL,
                 decision_trace_count INTEGER NOT NULL,
+                instruction_followed_count INTEGER NOT NULL,
+                instruction_following_rate REAL NOT NULL,
                 ollama_decisions INTEGER NOT NULL,
                 fallback_decisions INTEGER NOT NULL,
                 ollama_latency_seconds REAL NOT NULL,
@@ -158,9 +163,10 @@ class RunStore:
             INSERT OR REPLACE INTO generation_profiles (
                 run_id, generation, total_seconds, resolve_encounters_seconds,
                 advance_world_seconds, persist_seconds, visualize_seconds, overhead_seconds,
-                decision_trace_count, ollama_decisions, fallback_decisions,
+                decision_trace_count, instruction_followed_count, instruction_following_rate,
+                ollama_decisions, fallback_decisions,
                 ollama_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -172,6 +178,8 @@ class RunStore:
                 profile.visualize_seconds,
                 profile.overhead_seconds,
                 profile.decision_trace_count,
+                profile.instruction_followed_count,
+                profile.instruction_following_rate,
                 profile.ollama_decisions,
                 profile.fallback_decisions,
                 profile.ollama_latency_seconds,
@@ -327,9 +335,10 @@ class RunStore:
                     """
                     INSERT OR REPLACE INTO decision_traces (
                         encounter_id, round_index, side, agent_id, opponent_id,
-                        backend, action, confidence, reasoning_summary, used_fallback,
+                        strategy_seed, backend, action, expected_action, instruction_followed,
+                        confidence, reasoning_summary, used_fallback,
                         error_message, latency_ms, prompt_text, response_text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         encounter_id,
@@ -337,8 +346,11 @@ class RunStore:
                         decision_trace.side,
                         decision_trace.agent_id,
                         decision_trace.opponent_id,
+                        decision_trace.strategy_seed,
                         decision_trace.backend,
                         decision_trace.action,
+                        decision_trace.expected_action,
+                        int(decision_trace.instruction_followed),
                         decision_trace.confidence,
                         decision_trace.reasoning_summary,
                         int(decision_trace.used_fallback),
@@ -395,7 +407,8 @@ def export_profiles_csv(db_path: Path, output_path: Path | None = None) -> Path:
         """
         SELECT generation, total_seconds, resolve_encounters_seconds,
                advance_world_seconds, persist_seconds, visualize_seconds,
-               overhead_seconds, decision_trace_count, ollama_decisions,
+             overhead_seconds, decision_trace_count, instruction_followed_count,
+             instruction_following_rate, ollama_decisions,
                fallback_decisions, ollama_latency_seconds,
                mean_decision_latency_ms, max_decision_latency_ms
         FROM generation_profiles
@@ -417,6 +430,8 @@ def export_profiles_csv(db_path: Path, output_path: Path | None = None) -> Path:
                 "visualize_seconds",
                 "overhead_seconds",
                 "decision_trace_count",
+                "instruction_followed_count",
+                "instruction_following_rate",
                 "ollama_decisions",
                 "fallback_decisions",
                 "ollama_latency_seconds",
