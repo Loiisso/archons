@@ -26,7 +26,8 @@ def test_generation_profiles_are_persisted_and_exported(tmp_path) -> None:
         """
         SELECT generation, total_seconds, resolve_encounters_seconds,
                advance_world_seconds, persist_seconds, visualize_seconds,
-               overhead_seconds, decision_trace_count, ollama_latency_seconds
+               overhead_seconds, decision_trace_count, instruction_followed_count,
+               instruction_following_rate, ollama_latency_seconds
         FROM generation_profiles
         ORDER BY generation ASC
         """
@@ -42,8 +43,12 @@ def test_generation_profiles_are_persisted_and_exported(tmp_path) -> None:
     assert all(row[4] >= 0.0 for row in rows)
     assert all(row[5] >= 0.0 for row in rows)
     assert all(row[6] >= 0.0 for row in rows)
-    assert all(row[8] == 0.0 for row in rows)
+    assert all(row[7] >= 0 for row in rows)
+    assert all(row[8] >= 0 for row in rows)
+    assert all(0.0 <= row[9] <= 1.0 for row in rows)
+    assert all(row[10] == 0.0 for row in rows)
 
     csv_text = profiles_csv_path.read_text(encoding="utf-8")
     assert "generation,total_seconds,resolve_encounters_seconds" in csv_text
+    assert "instruction_followed_count,instruction_following_rate" in csv_text
     assert "\n2," in csv_text

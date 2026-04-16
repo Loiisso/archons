@@ -92,8 +92,11 @@ class DecisionTrace:
     side: EncounterSide
     agent_id: str
     opponent_id: str
+    strategy_seed: StrategyName
     backend: str
     action: Action
+    expected_action: Action
+    instruction_followed: bool
     confidence: float
     reasoning_summary: str
     used_fallback: bool
@@ -139,6 +142,8 @@ class GenerationProfile:
     visualize_seconds: float
     overhead_seconds: float
     decision_trace_count: int
+    instruction_followed_count: int
+    instruction_following_rate: float
     ollama_decisions: int
     fallback_decisions: int
     ollama_latency_seconds: float

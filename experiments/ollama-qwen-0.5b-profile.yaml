@@ -1,0 +1,49 @@
+name: ollama-qwen-0.5b-profile
+world:
+  width: 6
+  height: 6
+  toroidal: true
+  initial_alive_probability: 0.30
+game:
+  rounds_per_encounter: 1
+  payoff:
+    reward: 3
+    sucker: 0
+    temptation: 5
+    punishment: 1
+simulation:
+  generations: 4
+  seed: 19
+  print_progress: true
+  progress_interval: 1
+  progress_log_name: progress.log
+agents:
+  backend: ollama
+  strategy_weights:
+    always_cooperate: 0.25
+    always_defect: 0.25
+    tit_for_tat: 0.30
+    grim_trigger: 0.20
+  fallback_strategy: tit_for_tat
+  prompt_evolution:
+    mutation_rate: 0.20
+    mutation_step: 0.10
+    style_options:
+      - balanced
+      - cautious
+      - opportunistic
+      - vengeful
+  ollama:
+    base_url: http://localhost:11434
+    model: qwen2.5:0.5b
+    temperature: 0.1
+    timeout_seconds: 30
+    require_model: true
+    fallback_on_error: false
+visualization:
+  enabled: false
+  interval: 1
+  output_dir_name: viz
+  render_ascii: false
+output:
+  root_dir: artifacts

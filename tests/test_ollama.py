@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from archons.config import OllamaConfig
+from archons.core.models import RoundRecord
 from archons.core.models import AgentState, RecognitionSnapshot
 from archons.llm.ollama import OllamaError, OllamaPolicy
 
@@ -81,3 +82,36 @@ def test_ollama_policy_can_fallback_when_enabled() -> None:
     assert result.used_fallback is True
     assert result.backend == "deterministic-fallback"
     assert result.error_message is not None
+
+
+def test_instruction_following_can_be_measured_against_strategy_seed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/chat":
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": '{"action": "D", "confidence": 0.9, "reasoning_summary": "Mirroring the opponent after a defection."}'
+                    }
+                },
+            )
+        return httpx.Response(200, json={"models": [{"name": "qwen2.5:3b-instruct"}]})
+
+    policy = OllamaPolicy(
+        config=OllamaConfig(model="qwen2.5:3b-instruct"),
+        fallback_strategy="always_cooperate",
+        transport=httpx.MockTransport(handler),
+    )
+
+    prior_rounds = (
+        RoundRecord(round_index=1, left_action="C", right_action="D", left_payoff=0, right_payoff=5),
+    )
+    result = policy.choose_action(
+        agent=AgentState("agent_1", "lineage_1", "tit_for_tat"),
+        opponent=AgentState("agent_2", "lineage_2", "always_defect"),
+        prior_rounds=prior_rounds,
+        side="left",
+        recognition=RecognitionSnapshot("agent_2", "lineage_2", 1.0, "Known defector."),
+    )
+
+    assert result.action == "D"

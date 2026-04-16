@@ -101,6 +101,7 @@ class ProgressReporter:
                     f"births={metrics.births}",
                     f"deaths={metrics.deaths}",
                     f"coop_rate={metrics.cooperation_rate:.2f}",
+                    f"instruction_rate={profile.instruction_following_rate:.2f}",
                     f"encounters={metrics.total_encounters}",
                     f"decision_traces={profile.decision_trace_count}",
                     f"ollama={profile.ollama_decisions}",
@@ -419,8 +420,15 @@ class SimulationRunner:
                         side="left",
                         agent_id=left_agent.agent_id,
                         opponent_id=right_agent.agent_id,
+                        strategy_seed=left_agent.strategy,
                         backend=left_result.backend,
                         action=left_result.action,
+                        expected_action=choose_deterministic_action(
+                            strategy=left_agent.strategy,
+                            prior_rounds=prior_rounds,
+                            side="left",
+                        ),
+                        instruction_followed=False,
                         confidence=left_result.confidence,
                         reasoning_summary=left_result.reasoning_summary,
                         used_fallback=left_result.used_fallback,
@@ -434,8 +442,15 @@ class SimulationRunner:
                         side="right",
                         agent_id=right_agent.agent_id,
                         opponent_id=left_agent.agent_id,
+                        strategy_seed=right_agent.strategy,
                         backend=right_result.backend,
                         action=right_result.action,
+                        expected_action=choose_deterministic_action(
+                            strategy=right_agent.strategy,
+                            prior_rounds=prior_rounds,
+                            side="right",
+                        ),
+                        instruction_followed=False,
                         confidence=right_result.confidence,
                         reasoning_summary=right_result.reasoning_summary,
                         used_fallback=right_result.used_fallback,
@@ -445,6 +460,15 @@ class SimulationRunner:
                         response_text=right_result.response_text,
                     ),
                 ]
+            )
+
+            decision_traces[-2] = replace(
+                decision_traces[-2],
+                instruction_followed=decision_traces[-2].action == decision_traces[-2].expected_action,
+            )
+            decision_traces[-1] = replace(
+                decision_traces[-1],
+                instruction_followed=decision_traces[-1].action == decision_traces[-1].expected_action,
             )
 
         encounter = EncounterRecord(
@@ -583,6 +607,10 @@ class SimulationRunner:
             trace.latency_ms for trace in decision_traces if trace.backend == "ollama"
         ]
         ollama_latency_seconds = sum(ollama_decision_latencies_ms) / 1000.0
+        instruction_followed_count = sum(1 for trace in decision_traces if trace.instruction_followed)
+        instruction_following_rate = (
+            instruction_followed_count / len(decision_traces) if decision_traces else 0.0
+        )
         mean_decision_latency_ms = (
             sum(ollama_decision_latencies_ms) / len(ollama_decision_latencies_ms)
             if ollama_decision_latencies_ms
@@ -606,6 +634,8 @@ class SimulationRunner:
             visualize_seconds=visualize_seconds,
             overhead_seconds=overhead_seconds,
             decision_trace_count=len(decision_traces),
+            instruction_followed_count=instruction_followed_count,
+            instruction_following_rate=instruction_following_rate,
             ollama_decisions=sum(1 for trace in decision_traces if trace.backend == "ollama"),
             fallback_decisions=sum(1 for trace in decision_traces if trace.used_fallback),
             ollama_latency_seconds=ollama_latency_seconds,
