@@ -106,6 +106,24 @@ class RunStore:
                 PRIMARY KEY (encounter_id, round_index)
             );
 
+            CREATE TABLE IF NOT EXISTS messages (
+                encounter_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                sender_side TEXT NOT NULL,
+                sender_agent_id TEXT NOT NULL,
+                recipient_agent_id TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                used_fallback INTEGER NOT NULL,
+                error_message TEXT,
+                latency_ms REAL NOT NULL,
+                prompt_text TEXT NOT NULL,
+                response_text TEXT NOT NULL,
+                PRIMARY KEY (encounter_id, phase, sender_side)
+            );
+
             CREATE TABLE IF NOT EXISTS decision_traces (
                 encounter_id TEXT NOT NULL,
                 round_index INTEGER NOT NULL,
@@ -328,6 +346,32 @@ class RunStore:
                         round_record.right_action,
                         round_record.left_payoff,
                         round_record.right_payoff,
+                    ),
+                )
+            for message in encounter.messages:
+                self.connection.execute(
+                    """
+                    INSERT OR REPLACE INTO messages (
+                        encounter_id, phase, sender_side, sender_agent_id, recipient_agent_id,
+                        backend, message_text, intent, confidence, used_fallback,
+                        error_message, latency_ms, prompt_text, response_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        encounter_id,
+                        message.phase,
+                        message.sender_side,
+                        message.sender_agent_id,
+                        message.recipient_agent_id,
+                        message.backend,
+                        message.message_text,
+                        message.intent,
+                        message.confidence,
+                        int(message.used_fallback),
+                        message.error_message,
+                        message.latency_ms,
+                        message.prompt_text,
+                        message.response_text,
                     ),
                 )
             for decision_trace in encounter.decision_traces:

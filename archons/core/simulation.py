@@ -27,6 +27,7 @@ from archons.core.models import (
     EncounterSide,
     GenerationProfile,
     GenerationMetrics,
+    MessageRecord,
     Position,
     PromptTraits,
     RecognitionSnapshot,
@@ -34,7 +35,7 @@ from archons.core.models import (
     StrategyName,
 )
 from archons.core.strategies import choose_deterministic_action
-from archons.llm.ollama import DecisionResult, OllamaPolicy
+from archons.llm.ollama import DecisionResult, MessageResult, OllamaPolicy
 from archons.storage.sqlite_store import RunStore, export_profiles_csv
 
 
@@ -370,10 +371,68 @@ class SimulationRunner:
         left_agent: AgentState,
         right_agent: AgentState,
     ) -> EncounterRecord:
+        messages: list[MessageRecord] = []
         rounds: list[RoundRecord] = []
         decision_traces: list[DecisionTrace] = []
         left_recognition = build_recognition_snapshot(agent=left_agent, opponent=right_agent)
         right_recognition = build_recognition_snapshot(agent=right_agent, opponent=left_agent)
+        left_incoming_message: MessageResult | None = None
+        right_incoming_message: MessageResult | None = None
+
+        if self.experiment.game.communication.enabled and self.ollama_policy is not None:
+            left_outgoing_message = self.ollama_policy.generate_message(
+                agent=left_agent,
+                opponent=right_agent,
+                prior_rounds=tuple(rounds),
+                side="left",
+                recognition=left_recognition,
+                max_chars=self.experiment.game.communication.message_max_chars,
+            )
+            right_outgoing_message = self.ollama_policy.generate_message(
+                agent=right_agent,
+                opponent=left_agent,
+                prior_rounds=tuple(rounds),
+                side="right",
+                recognition=right_recognition,
+                max_chars=self.experiment.game.communication.message_max_chars,
+            )
+            left_incoming_message = right_outgoing_message
+            right_incoming_message = left_outgoing_message
+            messages.extend(
+                [
+                    MessageRecord(
+                        phase="pre_encounter",
+                        sender_side="left",
+                        sender_agent_id=left_agent.agent_id,
+                        recipient_agent_id=right_agent.agent_id,
+                        backend=left_outgoing_message.backend,
+                        message_text=left_outgoing_message.message_text,
+                        intent=left_outgoing_message.intent,
+                        confidence=left_outgoing_message.confidence,
+                        used_fallback=left_outgoing_message.used_fallback,
+                        error_message=left_outgoing_message.error_message,
+                        latency_ms=left_outgoing_message.latency_ms,
+                        prompt_text=left_outgoing_message.prompt_text,
+                        response_text=left_outgoing_message.response_text,
+                    ),
+                    MessageRecord(
+                        phase="pre_encounter",
+                        sender_side="right",
+                        sender_agent_id=right_agent.agent_id,
+                        recipient_agent_id=left_agent.agent_id,
+                        backend=right_outgoing_message.backend,
+                        message_text=right_outgoing_message.message_text,
+                        intent=right_outgoing_message.intent,
+                        confidence=right_outgoing_message.confidence,
+                        used_fallback=right_outgoing_message.used_fallback,
+                        error_message=right_outgoing_message.error_message,
+                        latency_ms=right_outgoing_message.latency_ms,
+                        prompt_text=right_outgoing_message.prompt_text,
+                        response_text=right_outgoing_message.response_text,
+                    ),
+                ]
+            )
+
         for round_index in range(1, self.experiment.game.rounds_per_encounter + 1):
             prior_rounds = tuple(rounds)
             left_result = self._choose_action(
@@ -382,6 +441,8 @@ class SimulationRunner:
                 prior_rounds=prior_rounds,
                 side="left",
                 recognition=left_recognition,
+                incoming_message=left_incoming_message.message_text if left_incoming_message else None,
+                incoming_intent=left_incoming_message.intent if left_incoming_message else None,
             )
             right_result = self._choose_action(
                 agent=right_agent,
@@ -389,6 +450,8 @@ class SimulationRunner:
                 prior_rounds=prior_rounds,
                 side="right",
                 recognition=right_recognition,
+                incoming_message=right_incoming_message.message_text if right_incoming_message else None,
+                incoming_intent=right_incoming_message.intent if right_incoming_message else None,
             )
             left_action = left_result.action
             right_action = right_result.action
@@ -479,6 +542,7 @@ class SimulationRunner:
             right_position=right_position,
             left_recognition=left_recognition,
             right_recognition=right_recognition,
+            messages=tuple(messages),
             rounds=tuple(rounds),
             decision_traces=tuple(decision_traces),
         )
@@ -493,6 +557,8 @@ class SimulationRunner:
         prior_rounds: tuple[RoundRecord, ...],
         side: EncounterSide,
         recognition: RecognitionSnapshot,
+        incoming_message: str | None = None,
+        incoming_intent: str | None = None,
     ) -> DecisionResult:
         if self.ollama_policy is not None:
             return self.ollama_policy.choose_action(
@@ -501,6 +567,8 @@ class SimulationRunner:
                 prior_rounds=prior_rounds,
                 side=side,
                 recognition=recognition,
+                incoming_message=incoming_message,
+                incoming_intent=incoming_intent,
             )
         action = choose_deterministic_action(strategy=agent.strategy, prior_rounds=prior_rounds, side=side)
         return DecisionResult(

@@ -12,6 +12,7 @@ StrategyName = Literal[
 ]
 BackendName = Literal["deterministic", "ollama"]
 EncounterSide = Literal["left", "right"]
+MessagePhase = Literal["pre_encounter"]
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -107,6 +108,23 @@ class DecisionTrace:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageRecord:
+    phase: MessagePhase
+    sender_side: EncounterSide
+    sender_agent_id: str
+    recipient_agent_id: str
+    backend: str
+    message_text: str
+    intent: str
+    confidence: float
+    used_fallback: bool
+    error_message: str | None
+    latency_ms: float
+    prompt_text: str
+    response_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class EncounterRecord:
     generation: int
     left_agent_id: str
@@ -115,6 +133,7 @@ class EncounterRecord:
     right_position: Position
     left_recognition: RecognitionSnapshot
     right_recognition: RecognitionSnapshot
+    messages: tuple[MessageRecord, ...]
     rounds: tuple[RoundRecord, ...]
     decision_traces: tuple[DecisionTrace, ...]
 

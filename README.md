@@ -42,6 +42,23 @@ uv run archons run --config experiments/ollama-qwen-1.5b-10x10-20.yaml
 uv run archons run --config experiments/ollama-qwen-10x10-20.yaml
 ```
 
+## Player Communication
+
+The simulator now supports an optional pre-encounter communication phase for Ollama-backed agents. When enabled, each side sends one short message before the first action, and the received message is injected into the next decision prompt.
+
+Try the communication smoke config:
+
+```bash
+uv run archons ollama-check --config experiments/ollama-qwen-0.5b-communication-smoke.yaml
+uv run archons run --config experiments/ollama-qwen-0.5b-communication-smoke.yaml
+```
+
+Communication is configured under `game.communication`:
+
+- `enabled`: turn pre-encounter messages on or off
+- `mode`: currently `pre_encounter`
+- `message_max_chars`: hard cap for the generated message text
+
 Artifacts are written under `artifacts/` by default:
 
 - `simulation.sqlite3` with run data
@@ -50,6 +67,7 @@ Artifacts are written under `artifacts/` by default:
 - `progress.log` with run start, per-generation progress, and completion lines for long simulations
 - `profiles.csv` with per-generation timing breakdowns for encounter resolution, world advance, persistence, visualization, model latency, and instruction-following rate
 - `decision_traces` table in SQLite showing prompt/response pairs, expected seed-consistent action, and whether each decision followed the strategy seed
+- `messages` table in SQLite showing pre-encounter communication payloads, intents, and prompt/response pairs
 
 Progress reporting is configurable in the experiment YAML under `simulation`:
 

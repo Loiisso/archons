@@ -6,7 +6,7 @@ This backlog tracks experiment ideas that are close enough to the current archit
 
 ### Status
 
-Not started.
+Initial pre-encounter message exchange is implemented in code. Still missing richer metrics, reporting, and experiment comparisons.
 
 ### Why This Matters
 
@@ -29,9 +29,9 @@ Does allowing short pre-action communication increase cooperation stability, or 
 
 ### Current Gap
 
-- No communication phase exists in the encounter loop.
-- No message artifacts are persisted.
-- No metrics distinguish truthful signaling from deceptive signaling.
+- Only a single pre-encounter bilateral exchange exists.
+- Message artifacts are persisted, but there is no export/reporting surface yet.
+- No metrics yet distinguish truthful signaling from deceptive signaling.
 
 ### Proposed Scope
 

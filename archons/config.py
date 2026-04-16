@@ -24,6 +24,13 @@ class PayoffConfig(BaseModel):
 class GameConfig(BaseModel):
     rounds_per_encounter: int = Field(default=3, ge=1)
     payoff: PayoffConfig = Field(default_factory=PayoffConfig)
+    communication: "CommunicationConfig" = Field(default_factory=lambda: CommunicationConfig())
+
+
+class CommunicationConfig(BaseModel):
+    enabled: bool = False
+    mode: Literal["pre_encounter"] = "pre_encounter"
+    message_max_chars: int = Field(default=160, ge=1, le=500)
 
 
 class OllamaConfig(BaseModel):
