@@ -10,7 +10,7 @@ StrategyName = Literal[
     "tit_for_tat",
     "grim_trigger",
 ]
-BackendName = Literal["deterministic", "ollama"]
+BackendName = Literal["deterministic", "ollama", "openai"]
 EncounterSide = Literal["left", "right"]
 
 
@@ -144,8 +144,8 @@ class GenerationProfile:
     decision_trace_count: int
     instruction_followed_count: int
     instruction_following_rate: float
-    ollama_decisions: int
+    llm_decisions: int
     fallback_decisions: int
-    ollama_latency_seconds: float
+    llm_latency_seconds: float
     mean_decision_latency_ms: float
     max_decision_latency_ms: float

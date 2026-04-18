@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import asyncio
+from functools import wraps
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 
 from archons.analysis.reporting import export_metrics_csv, export_profiles_csv
 from archons.config import load_config
 from archons.core.simulation import SimulationRunner
-from archons.llm.ollama import OllamaPolicy
+from archons.llm.factory import build_policy_engine
+
+load_dotenv(override=True)
 
 app = typer.Typer(add_completion=False, help="Run Archons simulation experiments.")
 
+syncify = lambda f: wraps(f)(lambda *args, **kwargs: asyncio.run(f(*args, **kwargs)))
+
 
 @app.command()
-def run(config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True)) -> None:
+@syncify
+async def run(
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+) -> None:
     experiment = load_config(config)
     runner = SimulationRunner.from_config(experiment=experiment, config_path=config)
-    summary = runner.run()
+    summary = await runner.run()
     typer.echo(f"Run complete: {summary.run_id}")
     typer.echo(f"Artifacts: {summary.run_dir}")
     typer.echo(
@@ -45,15 +55,35 @@ def export_profiles(
     typer.echo(f"Profiles exported to {output_path}")
 
 
-@app.command("ollama-check")
-def ollama_check(config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True)) -> None:
+@app.command("policy-check")
+@syncify
+async def policy_check(
+    config: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),
+) -> None:
     experiment = load_config(config)
-    policy = OllamaPolicy(
-        config=experiment.agents.ollama,
-        fallback_strategy=experiment.agents.fallback_strategy,
-    )
-    policy.ensure_available()
-    typer.echo(
-        "Ollama is reachable and model is available: "
-        f"{experiment.agents.ollama.model} at {experiment.agents.ollama.base_url}"
+    typer.echo(f"Policy backend: {experiment.agents.backend}")
+    policy = build_policy_engine(experiment.agents)
+    if policy is None:
+        typer.echo("Policy engine: deterministic")
+        typer.echo("No external policy service configured, so liveliness is implicit.")
+        return
+    await policy.ensure_available()
+    typer.echo(_policy_liveliness_message(experiment))
+
+
+def _policy_liveliness_message(experiment) -> str:
+    if experiment.agents.backend == "ollama":
+        config_obj = experiment.agents.ollama
+
+    elif experiment.agents.backend == "openai":
+        config_obj = experiment.agents.openai
+    else:
+        # should not happen
+        config_obj = None
+        typer.echo(f"Unexpected policy engine: {experiment.agents.backend}")
+
+    return (
+        "Policy engine is reachable: "
+        f"{experiment.agents.backend} model={config_obj.model} "
+        f"base_url={config_obj.base_url}"
     )

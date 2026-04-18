@@ -1,32 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
 import httpx
-from pydantic import BaseModel, Field
 
 from archons.config import OllamaConfig
-from archons.core.models import Action, AgentState, EncounterSide, RecognitionSnapshot, RoundRecord
+from archons.core.models import AgentState, EncounterSide, RecognitionSnapshot, RoundRecord
 from archons.core.strategies import choose_deterministic_action
-
-
-class OllamaDecision(BaseModel):
-    action: Action
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    reasoning_summary: str = Field(default="Fallback response.")
-
-
-class DecisionResult(BaseModel):
-    action: Action
-    backend: str = "ollama"
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    reasoning_summary: str = Field(default="")
-    used_fallback: bool = False
-    prompt_text: str = ""
-    response_text: str = ""
-    error_message: str | None = None
-    latency_ms: float = 0.0
+from archons.llm.base import DecisionResult, StructuredDecision, build_policy_prompt
 
 
 class OllamaError(RuntimeError):
@@ -38,21 +21,23 @@ class OllamaPolicy:
         self,
         config: OllamaConfig,
         fallback_strategy: str,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._config = config
         self._fallback_strategy = fallback_strategy
         self._transport = transport
+        self._semaphore = asyncio.Semaphore(config.max_parallel_calls)
 
-    def ensure_available(self) -> None:
+    async def ensure_available(self) -> None:
         try:
-            with httpx.Client(
-                timeout=self._config.timeout_seconds,
-                transport=self._transport,
-            ) as client:
-                response = client.get(f"{self._config.base_url}/api/tags")
-                response.raise_for_status()
-                body = response.json()
+            async with self._semaphore:
+                async with httpx.AsyncClient(
+                    timeout=self._config.timeout_seconds,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.get(f"{self._config.base_url}/api/tags")
+                    response.raise_for_status()
+                    body = response.json()
         except Exception as exc:
             raise OllamaError(f"Unable to reach Ollama at {self._config.base_url}: {exc}") from exc
 
@@ -63,7 +48,7 @@ class OllamaPolicy:
                 f"Available models: {sorted(available_models)}"
             )
 
-    def choose_action(
+    async def choose_action(
         self,
         agent: AgentState,
         opponent: AgentState,
@@ -71,27 +56,24 @@ class OllamaPolicy:
         side: EncounterSide,
         recognition: RecognitionSnapshot,
     ) -> DecisionResult:
-        system_prompt = (
-            "You are an agent in an iterated Prisoner's Dilemma. Return JSON only with keys "
-            "action, confidence, and reasoning_summary. action must be C or D."
-        )
-        user_prompt = self._build_user_prompt(
+        system_prompt, user_prompt, prompt_text = build_policy_prompt(
             agent=agent,
             opponent=opponent,
             prior_rounds=prior_rounds,
             side=side,
             recognition=recognition,
         )
-        prompt_text = f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_prompt}"
         started = time.perf_counter()
         try:
-            decision = self._request_decision(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
+            async with self._semaphore:
+                decision = await self._request_decision(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
             latency_ms = (time.perf_counter() - started) * 1000
             return DecisionResult(
                 action=decision.action,
+                backend="ollama",
                 confidence=decision.confidence,
                 reasoning_summary=decision.reasoning_summary,
                 prompt_text=prompt_text,
@@ -119,41 +101,11 @@ class OllamaPolicy:
                 latency_ms=latency_ms,
             )
 
-    def _build_user_prompt(
-        self,
-        agent: AgentState,
-        opponent: AgentState,
-        prior_rounds: tuple[RoundRecord, ...],
-        side: EncounterSide,
-        recognition: RecognitionSnapshot,
-    ) -> str:
-        history_lines = [
-            self._render_history_line(round_record=round_record, side=side)
-            for round_record in prior_rounds
-        ]
-        return "\n".join(
-            [
-                f"self_agent={agent.agent_id}",
-                f"opponent_agent={opponent.agent_id}",
-                f"self_strategy_seed={agent.strategy}",
-                f"opponent_strategy_seed={opponent.strategy}",
-                f"base_prompt={agent.base_prompt}",
-                f"policy_prompt={agent.policy_prompt}",
-                f"recognition_confidence={recognition.confidence:.2f}",
-                f"recognized_agent={recognition.matched_agent_id or 'unknown'}",
-                f"recognized_lineage={recognition.matched_lineage_id or 'unknown'}",
-                f"memory_summary={recognition.memory_summary}",
-                "history:",
-                *history_lines,
-                "Choose your next action.",
-            ]
-        )
-
-    def _request_decision(
+    async def _request_decision(
         self,
         system_prompt: str,
         user_prompt: str,
-    ) -> OllamaDecision:
+    ) -> StructuredDecision:
         payload = {
             "model": self._config.model,
             "stream": False,
@@ -165,17 +117,17 @@ class OllamaPolicy:
             "options": {"temperature": self._config.temperature},
         }
 
-        with httpx.Client(
+        async with httpx.AsyncClient(
             timeout=self._config.timeout_seconds,
             transport=self._transport,
         ) as client:
-            response = client.post(f"{self._config.base_url}/api/chat", json=payload)
+            response = await client.post(f"{self._config.base_url}/api/chat", json=payload)
             response.raise_for_status()
             body = response.json()
 
         content = body["message"]["content"]
         parsed = self._parse_json_response(content)
-        return OllamaDecision.model_validate(parsed)
+        return StructuredDecision.model_validate(parsed)
 
     def _parse_json_response(self, content: str) -> dict[str, object]:
         try:
@@ -186,12 +138,3 @@ class OllamaPolicy:
             if start == -1 or end == -1 or end <= start:
                 raise
             return json.loads(content[start : end + 1])
-
-    def _render_history_line(self, round_record: RoundRecord, side: EncounterSide) -> str:
-        if side == "left":
-            self_action = round_record.left_action
-            other_action = round_record.right_action
-        else:
-            self_action = round_record.right_action
-            other_action = round_record.left_action
-        return f"round={round_record.round_index} self={self_action} other={other_action}"

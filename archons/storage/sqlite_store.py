@@ -139,16 +139,69 @@ class RunStore:
                 decision_trace_count INTEGER NOT NULL,
                 instruction_followed_count INTEGER NOT NULL,
                 instruction_following_rate REAL NOT NULL,
-                ollama_decisions INTEGER NOT NULL,
+                llm_decisions INTEGER NOT NULL,
                 fallback_decisions INTEGER NOT NULL,
-                ollama_latency_seconds REAL NOT NULL,
+                llm_latency_seconds REAL NOT NULL,
                 mean_decision_latency_ms REAL NOT NULL,
                 max_decision_latency_ms REAL NOT NULL,
                 PRIMARY KEY (run_id, generation)
             );
             """
         )
+        self._migrate_generation_profiles()
         self.connection.commit()
+
+    def _migrate_generation_profiles(self) -> None:
+        columns = {
+            row[1]
+            for row in self.connection.execute("PRAGMA table_info(generation_profiles)").fetchall()
+        }
+        if "ollama_decisions" not in columns or "llm_decisions" in columns:
+            return
+
+        self.connection.execute("ALTER TABLE generation_profiles RENAME TO generation_profiles_legacy")
+        self.connection.execute(
+            """
+            CREATE TABLE generation_profiles (
+                run_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                total_seconds REAL NOT NULL,
+                resolve_encounters_seconds REAL NOT NULL,
+                advance_world_seconds REAL NOT NULL,
+                persist_seconds REAL NOT NULL,
+                visualize_seconds REAL NOT NULL,
+                overhead_seconds REAL NOT NULL,
+                decision_trace_count INTEGER NOT NULL,
+                instruction_followed_count INTEGER NOT NULL,
+                instruction_following_rate REAL NOT NULL,
+                llm_decisions INTEGER NOT NULL,
+                fallback_decisions INTEGER NOT NULL,
+                llm_latency_seconds REAL NOT NULL,
+                mean_decision_latency_ms REAL NOT NULL,
+                max_decision_latency_ms REAL NOT NULL,
+                PRIMARY KEY (run_id, generation)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            INSERT INTO generation_profiles (
+                run_id, generation, total_seconds, resolve_encounters_seconds,
+                advance_world_seconds, persist_seconds, visualize_seconds, overhead_seconds,
+                decision_trace_count, instruction_followed_count, instruction_following_rate,
+                llm_decisions, fallback_decisions,
+                llm_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
+            )
+            SELECT
+                run_id, generation, total_seconds, resolve_encounters_seconds,
+                advance_world_seconds, persist_seconds, visualize_seconds, overhead_seconds,
+                decision_trace_count, instruction_followed_count, instruction_following_rate,
+                ollama_decisions, fallback_decisions,
+                ollama_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
+            FROM generation_profiles_legacy
+            """
+        )
+        self.connection.execute("DROP TABLE generation_profiles_legacy")
 
     def create_run(self, run_id: str, experiment_name: str, config_yaml: str, started_at: str) -> None:
         self.connection.execute(
@@ -164,8 +217,8 @@ class RunStore:
                 run_id, generation, total_seconds, resolve_encounters_seconds,
                 advance_world_seconds, persist_seconds, visualize_seconds, overhead_seconds,
                 decision_trace_count, instruction_followed_count, instruction_following_rate,
-                ollama_decisions, fallback_decisions,
-                ollama_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
+                llm_decisions, fallback_decisions,
+                llm_latency_seconds, mean_decision_latency_ms, max_decision_latency_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -180,9 +233,9 @@ class RunStore:
                 profile.decision_trace_count,
                 profile.instruction_followed_count,
                 profile.instruction_following_rate,
-                profile.ollama_decisions,
+                profile.llm_decisions,
                 profile.fallback_decisions,
-                profile.ollama_latency_seconds,
+                profile.llm_latency_seconds,
                 profile.mean_decision_latency_ms,
                 profile.max_decision_latency_ms,
             ),
@@ -403,13 +456,19 @@ def export_metrics_csv(db_path: Path, output_path: Path | None = None) -> Path:
 def export_profiles_csv(db_path: Path, output_path: Path | None = None) -> Path:
     resolved_output = output_path or db_path.with_name("profiles.csv")
     connection = sqlite3.connect(db_path)
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(generation_profiles)").fetchall()
+    }
+    decision_column = "llm_decisions" if "llm_decisions" in columns else "ollama_decisions"
+    latency_column = "llm_latency_seconds" if "llm_latency_seconds" in columns else "ollama_latency_seconds"
     rows = connection.execute(
-        """
+        f"""
         SELECT generation, total_seconds, resolve_encounters_seconds,
                advance_world_seconds, persist_seconds, visualize_seconds,
              overhead_seconds, decision_trace_count, instruction_followed_count,
-             instruction_following_rate, ollama_decisions,
-               fallback_decisions, ollama_latency_seconds,
+               instruction_following_rate, {decision_column},
+               fallback_decisions, {latency_column},
                mean_decision_latency_ms, max_decision_latency_ms
         FROM generation_profiles
         ORDER BY generation ASC
@@ -432,9 +491,9 @@ def export_profiles_csv(db_path: Path, output_path: Path | None = None) -> Path:
                 "decision_trace_count",
                 "instruction_followed_count",
                 "instruction_following_rate",
-                "ollama_decisions",
+                "llm_decisions",
                 "fallback_decisions",
-                "ollama_latency_seconds",
+                "llm_latency_seconds",
                 "mean_decision_latency_ms",
                 "max_decision_latency_ms",
             ]

@@ -1,3 +1,4 @@
+import pytest
 from archons.analysis.viz import PeriodicVisualizer
 from archons.config import ExperimentConfig, OutputConfig, SimulationConfig, VisualizationConfig, WorldConfig
 from archons.core.models import AgentState, GenerationMetrics, Position
@@ -5,7 +6,8 @@ from archons.core.simulation import SimulationRunner
 from archons.storage.sqlite_store import RunStore
 
 
-def test_exact_id_memory_and_recognition_are_persisted(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_exact_id_memory_and_recognition_are_persisted(tmp_path) -> None:
     experiment = ExperimentConfig(
         world=WorldConfig(width=4, height=4, toroidal=False, initial_alive_probability=0.1),
         simulation=SimulationConfig(generations=1, seed=3),
@@ -20,7 +22,7 @@ def test_exact_id_memory_and_recognition_are_persisted(tmp_path) -> None:
     left_agent = AgentState("agent_left", "lineage_left", "always_cooperate")
     right_agent = AgentState("agent_right", "lineage_right", "always_defect")
 
-    first = runner._play_encounter(
+    first = await runner._play_encounter(
         generation=1,
         left_position=Position(1, 1),
         right_position=Position(1, 2),
@@ -31,7 +33,7 @@ def test_exact_id_memory_and_recognition_are_persisted(tmp_path) -> None:
     assert first.left_recognition.matched_agent_id is None
     assert left_agent.opponent_memories[right_agent.agent_id].opponent_defections == 3
 
-    second = runner._play_encounter(
+    second = await runner._play_encounter(
         generation=2,
         left_position=Position(1, 1),
         right_position=Position(1, 2),

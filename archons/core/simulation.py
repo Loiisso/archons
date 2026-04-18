@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timezone
-from pathlib import Path
+import asyncio
 import random
 import shutil
 import time
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 
 import yaml
@@ -25,16 +26,16 @@ from archons.core.models import (
     DecisionTrace,
     EncounterRecord,
     EncounterSide,
-    GenerationProfile,
     GenerationMetrics,
+    GenerationProfile,
     Position,
-    PromptTraits,
     RecognitionSnapshot,
     RoundRecord,
     StrategyName,
 )
 from archons.core.strategies import choose_deterministic_action
-from archons.llm.ollama import DecisionResult, OllamaPolicy
+from archons.llm.base import DecisionResult
+from archons.llm.factory import build_policy_engine
 from archons.storage.sqlite_store import RunStore, export_profiles_csv
 
 
@@ -55,7 +56,9 @@ class SimulationSummary:
 
 
 class ProgressReporter:
-    def __init__(self, run_dir: Path, enabled: bool, interval: int, log_name: str) -> None:
+    def __init__(
+        self, run_dir: Path, enabled: bool, interval: int, log_name: str
+    ) -> None:
         self._enabled = enabled
         self._interval = interval
         self._log_path = run_dir / log_name
@@ -96,7 +99,7 @@ class ProgressReporter:
                     f"advance={profile.advance_world_seconds:.2f}s",
                     f"persist={profile.persist_seconds:.2f}s",
                     f"viz={profile.visualize_seconds:.2f}s",
-                    f"model={profile.ollama_latency_seconds:.2f}s",
+                    f"model={profile.llm_latency_seconds:.2f}s",
                     f"live={metrics.live_cells}",
                     f"births={metrics.births}",
                     f"deaths={metrics.deaths}",
@@ -104,7 +107,7 @@ class ProgressReporter:
                     f"instruction_rate={profile.instruction_following_rate:.2f}",
                     f"encounters={metrics.total_encounters}",
                     f"decision_traces={profile.decision_trace_count}",
-                    f"ollama={profile.ollama_decisions}",
+                    f"llm={profile.llm_decisions}",
                     f"fallback={profile.fallback_decisions}",
                 ]
             )
@@ -132,15 +135,12 @@ class SimulationRunner:
         )
         self.random = random.Random(experiment.simulation.seed)
         self.agent_counter = 0
-        self.ollama_policy = None
-        if experiment.agents.backend == "ollama":
-            self.ollama_policy = OllamaPolicy(
-                config=experiment.agents.ollama,
-                fallback_strategy=experiment.agents.fallback_strategy,
-            )
+        self.policy_engine = build_policy_engine(experiment.agents)
 
     @classmethod
-    def from_config(cls, experiment: ExperimentConfig, config_path: Path) -> "SimulationRunner":
+    def from_config(
+        cls, experiment: ExperimentConfig, config_path: Path
+    ) -> "SimulationRunner":
         artifact_root = Path(experiment.output.root_dir)
 
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -171,11 +171,13 @@ class SimulationRunner:
             progress_reporter=progress_reporter,
         )
 
-    def run(self) -> SimulationSummary:
-        if self.ollama_policy is not None:
-            self.ollama_policy.ensure_available()
+    async def run(self) -> SimulationSummary:
+        if self.policy_engine is not None:
+            await self.policy_engine.ensure_available()
 
-        config_yaml = yaml.safe_dump(self.experiment.model_dump(mode="json"), sort_keys=False)
+        config_yaml = yaml.safe_dump(
+            self.experiment.model_dump(mode="json"), sort_keys=False
+        )
         started_at = datetime.now(tz=timezone.utc).isoformat()
         run_id = self.run_dir.name
         self.store.create_run(
@@ -203,7 +205,9 @@ class SimulationRunner:
             total_rounds=0,
         )
         initial_persist_started = time.perf_counter()
-        self.store.record_generation(run_id=run_id, metrics=initial_metrics, world=world, encounters=tuple())
+        self.store.record_generation(
+            run_id=run_id, metrics=initial_metrics, world=world, encounters=tuple()
+        )
         initial_persist_finished = time.perf_counter()
         self.visualizer.maybe_render(generation=0, world=world, metrics=initial_metrics)
         initial_visualize_finished = time.perf_counter()
@@ -225,7 +229,7 @@ class SimulationRunner:
         last_metrics = initial_metrics
         for generation in range(1, self.experiment.simulation.generations + 1):
             generation_started = time.perf_counter()
-            encounters = self._resolve_encounters(world=world, generation=generation)
+            encounters = await self._resolve_encounters(world=world, generation=generation)
             resolve_finished = time.perf_counter()
             next_world, metrics = self._advance_world(
                 current_world=world,
@@ -240,7 +244,9 @@ class SimulationRunner:
                 encounters=encounters,
             )
             persist_finished = time.perf_counter()
-            self.visualizer.maybe_render(generation=generation, world=next_world, metrics=metrics)
+            self.visualizer.maybe_render(
+                generation=generation, world=next_world, metrics=metrics
+            )
             visualize_finished = time.perf_counter()
             profile = self._build_generation_profile(
                 generation=generation,
@@ -292,7 +298,10 @@ class SimulationRunner:
         world: dict[Position, AgentState] = {}
         for y in range(self.experiment.world.height):
             for x in range(self.experiment.world.width):
-                if self.random.random() <= self.experiment.world.initial_alive_probability:
+                if (
+                    self.random.random()
+                    <= self.experiment.world.initial_alive_probability
+                ):
                     strategy = self._sample_strategy()
                     agent = self._new_agent(strategy=strategy)
                     world[Position(x=x, y=y)] = agent
@@ -337,32 +346,38 @@ class SimulationRunner:
             prompt_traits=prompt_traits,
         )
 
-    def _resolve_encounters(
+    async def _resolve_encounters(
         self,
         world: dict[Position, AgentState],
         generation: int,
     ) -> tuple[EncounterRecord, ...]:
-        encounters: list[EncounterRecord] = []
+        encounter_tasks: list[asyncio.Task[EncounterRecord]] = []
         seen_pairs: set[tuple[Position, Position]] = set()
 
-        for position, agent in world.items():
-            for neighbor_position in self._live_neighbor_positions(world=world, position=position):
+        for position in world:
+            for neighbor_position in self._live_neighbor_positions(
+                world=world, position=position
+            ):
                 pair = tuple(sorted((position, neighbor_position)))
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
-                opponent = world[neighbor_position]
-                encounter = self._play_encounter(
-                    generation=generation,
-                    left_position=pair[0],
-                    right_position=pair[1],
-                    left_agent=world[pair[0]],
-                    right_agent=world[pair[1]],
+                encounter_tasks.append(
+                    asyncio.create_task(
+                        self._play_encounter(
+                            generation=generation,
+                            left_position=pair[0],
+                            right_position=pair[1],
+                            left_agent=world[pair[0]],
+                            right_agent=world[pair[1]],
+                        )
+                    )
                 )
-                encounters.append(encounter)
-        return tuple(encounters)
+        if not encounter_tasks:
+            return tuple()
+        return tuple(await asyncio.gather(*encounter_tasks))
 
-    def _play_encounter(
+    async def _play_encounter(
         self,
         generation: int,
         left_position: Position,
@@ -372,27 +387,35 @@ class SimulationRunner:
     ) -> EncounterRecord:
         rounds: list[RoundRecord] = []
         decision_traces: list[DecisionTrace] = []
-        left_recognition = build_recognition_snapshot(agent=left_agent, opponent=right_agent)
-        right_recognition = build_recognition_snapshot(agent=right_agent, opponent=left_agent)
+        left_recognition = build_recognition_snapshot(
+            agent=left_agent, opponent=right_agent
+        )
+        right_recognition = build_recognition_snapshot(
+            agent=right_agent, opponent=left_agent
+        )
         for round_index in range(1, self.experiment.game.rounds_per_encounter + 1):
             prior_rounds = tuple(rounds)
-            left_result = self._choose_action(
-                agent=left_agent,
-                opponent=right_agent,
-                prior_rounds=prior_rounds,
-                side="left",
-                recognition=left_recognition,
-            )
-            right_result = self._choose_action(
-                agent=right_agent,
-                opponent=left_agent,
-                prior_rounds=prior_rounds,
-                side="right",
-                recognition=right_recognition,
+            left_result, right_result = await asyncio.gather(
+                self._choose_action(
+                    agent=left_agent,
+                    opponent=right_agent,
+                    prior_rounds=prior_rounds,
+                    side="left",
+                    recognition=left_recognition,
+                ),
+                self._choose_action(
+                    agent=right_agent,
+                    opponent=left_agent,
+                    prior_rounds=prior_rounds,
+                    side="right",
+                    recognition=right_recognition,
+                ),
             )
             left_action = left_result.action
             right_action = right_result.action
-            left_payoff, right_payoff = self._score_actions(left_action=left_action, right_action=right_action)
+            left_payoff, right_payoff = self._score_actions(
+                left_action=left_action, right_action=right_action
+            )
 
             left_agent.total_score += left_payoff
             left_agent.generation_score += left_payoff
@@ -464,11 +487,13 @@ class SimulationRunner:
 
             decision_traces[-2] = replace(
                 decision_traces[-2],
-                instruction_followed=decision_traces[-2].action == decision_traces[-2].expected_action,
+                instruction_followed=decision_traces[-2].action
+                == decision_traces[-2].expected_action,
             )
             decision_traces[-1] = replace(
                 decision_traces[-1],
-                instruction_followed=decision_traces[-1].action == decision_traces[-1].expected_action,
+                instruction_followed=decision_traces[-1].action
+                == decision_traces[-1].expected_action,
             )
 
         encounter = EncounterRecord(
@@ -482,11 +507,15 @@ class SimulationRunner:
             rounds=tuple(rounds),
             decision_traces=tuple(decision_traces),
         )
-        update_agent_memory(agent=left_agent, opponent=right_agent, encounter=encounter, side="left")
-        update_agent_memory(agent=right_agent, opponent=left_agent, encounter=encounter, side="right")
+        update_agent_memory(
+            agent=left_agent, opponent=right_agent, encounter=encounter, side="left"
+        )
+        update_agent_memory(
+            agent=right_agent, opponent=left_agent, encounter=encounter, side="right"
+        )
         return encounter
 
-    def _choose_action(
+    async def _choose_action(
         self,
         agent: AgentState,
         opponent: AgentState,
@@ -494,15 +523,17 @@ class SimulationRunner:
         side: EncounterSide,
         recognition: RecognitionSnapshot,
     ) -> DecisionResult:
-        if self.ollama_policy is not None:
-            return self.ollama_policy.choose_action(
+        if self.policy_engine is not None:
+            return await self.policy_engine.choose_action(
                 agent=agent,
                 opponent=opponent,
                 prior_rounds=prior_rounds,
                 side=side,
                 recognition=recognition,
             )
-        action = choose_deterministic_action(strategy=agent.strategy, prior_rounds=prior_rounds, side=side)
+        action = choose_deterministic_action(
+            strategy=agent.strategy, prior_rounds=prior_rounds, side=side
+        )
         return DecisionResult(
             action=action,
             backend="deterministic",
@@ -510,7 +541,9 @@ class SimulationRunner:
             reasoning_summary=f"Deterministic policy {agent.strategy} selected the action.",
         )
 
-    def _score_actions(self, left_action: Action, right_action: Action) -> tuple[int, int]:
+    def _score_actions(
+        self, left_action: Action, right_action: Action
+    ) -> tuple[int, int]:
         payoff = self.experiment.game.payoff
         if left_action == "C" and right_action == "C":
             return payoff.reward, payoff.reward
@@ -534,7 +567,9 @@ class SimulationRunner:
         for y in range(self.experiment.world.height):
             for x in range(self.experiment.world.width):
                 position = Position(x=x, y=y)
-                live_neighbors = self._live_neighbor_positions(world=current_world, position=position)
+                live_neighbors = self._live_neighbor_positions(
+                    world=current_world, position=position
+                )
                 neighbor_count = len(live_neighbors)
                 current_agent = current_world.get(position)
 
@@ -565,7 +600,9 @@ class SimulationRunner:
                     births += 1
 
         current_scores = [agent.generation_score for agent in current_world.values()]
-        average_score = sum(current_scores) / len(current_scores) if current_scores else 0.0
+        average_score = (
+            sum(current_scores) / len(current_scores) if current_scores else 0.0
+        )
         total_rounds = sum(len(encounter.rounds) for encounter in encounters)
         total_cooperations = sum(
             int(round_record.left_action == "C") + int(round_record.right_action == "C")
@@ -603,20 +640,26 @@ class SimulationRunner:
             for encounter in encounters
             for decision_trace in encounter.decision_traces
         ]
-        ollama_decision_latencies_ms = [
-            trace.latency_ms for trace in decision_traces if trace.backend == "ollama"
+        llm_decision_latencies_ms = [
+            trace.latency_ms
+            for trace in decision_traces
+            if trace.backend not in {"deterministic", "deterministic-fallback"}
         ]
-        ollama_latency_seconds = sum(ollama_decision_latencies_ms) / 1000.0
-        instruction_followed_count = sum(1 for trace in decision_traces if trace.instruction_followed)
-        instruction_following_rate = (
-            instruction_followed_count / len(decision_traces) if decision_traces else 0.0
+        llm_latency_seconds = sum(llm_decision_latencies_ms) / 1000.0
+        instruction_followed_count = sum(
+            1 for trace in decision_traces if trace.instruction_followed
         )
-        mean_decision_latency_ms = (
-            sum(ollama_decision_latencies_ms) / len(ollama_decision_latencies_ms)
-            if ollama_decision_latencies_ms
+        instruction_following_rate = (
+            instruction_followed_count / len(decision_traces)
+            if decision_traces
             else 0.0
         )
-        max_decision_latency_ms = max(ollama_decision_latencies_ms, default=0.0)
+        mean_decision_latency_ms = (
+            sum(llm_decision_latencies_ms) / len(llm_decision_latencies_ms)
+            if llm_decision_latencies_ms
+            else 0.0
+        )
+        max_decision_latency_ms = max(llm_decision_latencies_ms, default=0.0)
         overhead_seconds = max(
             0.0,
             total_seconds
@@ -636,9 +679,15 @@ class SimulationRunner:
             decision_trace_count=len(decision_traces),
             instruction_followed_count=instruction_followed_count,
             instruction_following_rate=instruction_following_rate,
-            ollama_decisions=sum(1 for trace in decision_traces if trace.backend == "ollama"),
-            fallback_decisions=sum(1 for trace in decision_traces if trace.used_fallback),
-            ollama_latency_seconds=ollama_latency_seconds,
+            llm_decisions=sum(
+                1
+                for trace in decision_traces
+                if trace.backend not in {"deterministic", "deterministic-fallback"}
+            ),
+            fallback_decisions=sum(
+                1 for trace in decision_traces if trace.used_fallback
+            ),
+            llm_latency_seconds=llm_latency_seconds,
             mean_decision_latency_ms=mean_decision_latency_ms,
             max_decision_latency_ms=max_decision_latency_ms,
         )
@@ -648,7 +697,11 @@ class SimulationRunner:
         world: dict[Position, AgentState],
         position: Position,
     ) -> list[Position]:
-        return [neighbor for neighbor in self._neighbor_positions(position) if neighbor in world]
+        return [
+            neighbor
+            for neighbor in self._neighbor_positions(position)
+            if neighbor in world
+        ]
 
     def _neighbor_positions(self, position: Position) -> Iterable[Position]:
         width = self.experiment.world.width
