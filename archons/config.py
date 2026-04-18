@@ -31,7 +31,25 @@ class OllamaConfig(BaseModel):
     model: str = "qwen2.5:3b-instruct"
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0)
+    max_parallel_calls: int = Field(default=2, ge=1)
     require_model: bool = True
+    fallback_on_error: bool = False
+
+
+class OpenAIConfig(BaseModel):
+    model: str = "gpt-4o-mini"
+    api_key: str | None = None
+    base_url: str | None = None
+    temperature: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
+    repetition_penalty: float | None = None
+    timeout_seconds: float = Field(default=30.0, gt=0.0)
+    max_parallel_calls: int = Field(default=2, ge=1)
+    max_retries: int = Field(default=2, ge=0)
+    require_model: bool = False
     fallback_on_error: bool = False
 
 
@@ -44,7 +62,7 @@ class PromptEvolutionConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    backend: Literal["deterministic", "ollama"] = "deterministic"
+    backend: Literal["deterministic", "ollama", "openai"] = "deterministic"
     strategy_weights: dict[str, float] = Field(
         default_factory=lambda: {
             "always_cooperate": 0.30,
@@ -57,7 +75,10 @@ class AgentsConfig(BaseModel):
         "always_cooperate", "always_defect", "tit_for_tat", "grim_trigger"
     ] = "tit_for_tat"
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
-    prompt_evolution: PromptEvolutionConfig = Field(default_factory=PromptEvolutionConfig)
+    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    prompt_evolution: PromptEvolutionConfig = Field(
+        default_factory=PromptEvolutionConfig
+    )
 
     @model_validator(mode="after")
     def validate_strategy_weights(self) -> "AgentsConfig":
